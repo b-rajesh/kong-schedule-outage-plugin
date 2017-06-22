@@ -29,17 +29,6 @@ end
 function ScheduleOutageHandler:access(config)
   ScheduleOutageHandler.super.access(self)
 
-  -- HTTP Status Code to send back in response
-  local httpStatusCode = config.statusCode
-
-  -- If HTTP Status Message is set, then set it here
-  local httpStatusMessage
-  if config.statusMessage ~= nil then
-    httpStatusMessage = config.statusMessage
-  end
-
-  local plannedOutageHeader = config.plannedHeader or "PLANNED-OUTAGE"
-
   -- Current Timestamp
   local currentTimestamp = time()
 
@@ -60,6 +49,15 @@ function ScheduleOutageHandler:access(config)
 
   -- If current time within outage range, kill the request and respond with 503 Service Unavailable
   if currentTimestamp >= fromTimestamp and currentTimestamp <= toTimestamp then
+    -- HTTP Status Code to send back in response
+    local httpStatusCode = config.statusCode
+
+    -- If HTTP Status Message is set, then set it here
+    local httpStatusMessage
+    if config.statusMessage ~= nil then
+      httpStatusMessage = config.statusMessage
+    end
+
     if httpStatusMessage and httpStatusMessage ~= "" then
       ngx.status = httpStatusCode
       ngx.say(cjson.encode({
@@ -71,6 +69,7 @@ function ScheduleOutageHandler:access(config)
     return exit(httpStatusCode)
   -- If not within current outage, and an outage is expected to occur in the future, then add the `AUSPOST-PLANNED-OUTAGE` header
   elseif not skipOutage and currentTimestamp < fromTimestamp then
+    local plannedOutageHeader = config.plannedHeader or "PLANNED-OUTAGE"
     header[plannedOutageHeader] = '{"from":"' .. config.from .. '", "to":"' .. config.to .. '"}'
   end
 end
