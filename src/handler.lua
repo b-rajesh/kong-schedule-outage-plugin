@@ -11,11 +11,15 @@ local PATTERN = "(%d+)%-(%d+)%-(%d+)%a(%d+)%:(%d+)%:([%d%.]+)([Z%p])"
 
 -- Credit where credit is due: https://coronalabs.com/blog/2013/01/15/working-with-time-and-dates-in-corona/
 local function makeTimeStamp( dateString )
-  local year, month, day, hour, minute, seconds, zulu = dateString:match(PATTERN)
-  local timestamp = os.time(
-    { year=year, month=month, day=day, hour=hour, min=minute, sec=seconds }
-  )
-  return timestamp
+  local year, month, day, hour, minute, seconds = dateString:match(PATTERN)
+  return os.time{
+    year  = year,
+    month = month,
+    day   = day,
+    hour  = hour,
+    min   = minute,
+    sec   = seconds,
+  }
 end
 
 function ScheduleOutageHandler:new()
