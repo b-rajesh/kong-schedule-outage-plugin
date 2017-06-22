@@ -1,6 +1,10 @@
 # Schedule Outage Plugin
 This is a Schedule Outage plugin for Kong, written in Lua. It allows outages to be scheduled from upstream in kong. 
 
+## Other Contributors
+Hugo Muller-Downing
+Chris McDonald
+
 ## Usage
 ### Configuration
 | Input Field| Required/Optional|Data Type|Description |
