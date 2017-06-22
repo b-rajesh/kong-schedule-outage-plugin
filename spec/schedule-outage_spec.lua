@@ -6,7 +6,7 @@ describe("Plugin: schedule-outage", function()
   setup(function()
 
     -- API with outage scheduled in the future
-    api = assert(helpers.dao.apis:insert {
+    local api = assert(helpers.dao.apis:insert {
       name         = "api1",
       hosts        = { "test.com" },
       upstream_url = "http://mockbin.com",
@@ -25,7 +25,7 @@ describe("Plugin: schedule-outage", function()
     })
 
   -- API with outage currently scheduled
-    api2 = assert(helpers.dao.apis:insert {
+    local api2 = assert(helpers.dao.apis:insert {
       name         = "api2",
       hosts        = { "test2.com" },
       upstream_url = "http://mockbin.com",
@@ -44,7 +44,7 @@ describe("Plugin: schedule-outage", function()
     })
 
     -- API with an outage scheduled in the past
-    api3 = assert(helpers.dao.apis:insert {
+    local api3 = assert(helpers.dao.apis:insert {
       name         = "api3",
       hosts        = { "test3.com" },
       upstream_url = "http://mockbin.com",
