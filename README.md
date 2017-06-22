@@ -13,7 +13,7 @@ This is a Schedule Outage plugin for Kong, written in Lua. It allows outages to 
 
 Here is a sample CURL command for enablind the plugin 
 
-`curl -X POST kong:8001/apis/API-NAME/plugins \`
+`curl -X POST kong:8001/apis/{api-name}}/plugins \`
 
 `--data "name=schedule-outage" \`
 
@@ -34,7 +34,7 @@ If skip_outage_check URL parameter is appended to the request, the check is skip
 If it is appended to the request during an outage, the modified response will still occur, blocking usage of the API.
 
 Example URL:
-http://localhost:8000/locations/v2/points/postcode/3000?skip_outage_check=1
+http://localhost:8000/[api-name]?skip_outage_check=1
 
 
 
