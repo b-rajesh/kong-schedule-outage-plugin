@@ -5,6 +5,7 @@ local ScheduleOutageHandler = BasePlugin:extend()
 local req_get_uri_args = ngx.req.get_uri_args
 local exit = ngx.exit
 local header = ngx.header
+local time = ngx.time()
 
 local PATTERN = "(%d+)%-(%d+)%-(%d+)%a(%d+)%:(%d+)%:([%d%.]+)([Z%p])"
 
@@ -36,7 +37,7 @@ function ScheduleOutageHandler:access(config)
   local plannedOutageHeader = config.plannedHeader or "PLANNED-OUTAGE"
 
   -- Current Timestamp
-  local currentTimestamp = os.time()
+  local currentTimestamp = time()
 
   -- From Timestamp
   local fromTimestamp = makeTimeStamp(config.from)
