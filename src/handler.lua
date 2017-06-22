@@ -33,11 +33,7 @@ function ScheduleOutageHandler:access(config)
     httpStatusMessage = config.statusMessage
   end
 
-  if config.plannedHeader ~= nil then
-    plannedOutageHeader = config.plannedHeader
-  else
-    plannedOutageHeader = "PLANNED-OUTAGE"
-  end
+  local plannedOutageHeader = config.plannedHeader or "PLANNED-OUTAGE"
 
   -- Current Timestamp
   local currentTimestamp = os.time()
