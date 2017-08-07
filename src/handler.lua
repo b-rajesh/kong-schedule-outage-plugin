@@ -67,7 +67,7 @@ function ScheduleOutageHandler:access(config)
     end
 
     return exit(httpStatusCode)
-  -- If not within current outage, and an outage is expected to occur in the future, then add the `AUSPOST-PLANNED-OUTAGE` header
+  -- If not within current outage, and an outage is expected to occur in the future, then add the `PLANNED-OUTAGE` header
   elseif not skipOutage and currentTimestamp < fromTimestamp then
     local plannedOutageHeader = config.plannedHeader or "PLANNED-OUTAGE"
     header[plannedOutageHeader] = '{"from":"' .. config.from .. '", "to":"' .. config.to .. '"}'
