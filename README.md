@@ -177,11 +177,40 @@ instead of UTC.
 
 ## Testing
 
-Tests use [Pongo](https://github.com/Kong/kong-pongo) and Docker:
+Tests run with [Pongo](https://github.com/Kong/kong-pongo), which needs Docker.
+Install Pongo once:
 
 ```bash
-KONG_VERSION=3.14.0.x pongo run   # LTS (Enterprise versions have 4 parts)
-KONG_VERSION=3.16.0.x pongo run   # latest
+git clone https://github.com/Kong/kong-pongo.git
+ln -s "$(pwd)/kong-pongo/pongo.sh" ~/.local/bin/pongo   # any directory on your PATH
+```
+
+Kong Enterprise versions have four parts, so use `3.14.0.x` rather than
+`3.14.x`. The first run for a version builds a test image and takes a few
+minutes.
+
+| Spec | Type | What it covers |
+|---|---|---|
+| `spec/schedule-outage/01-schema_spec.lua` | Unit | Configuration validation and defaults |
+| `spec/schedule-outage/03-handler_spec.lua` | Unit | UTC conversion, window boundaries, invalid windows, problem response, behaviour without `setmetatable` (strict Lua sandbox). Kong is not started; the PDK and clock are stubbed. |
+| `spec/schedule-outage/02-access_spec.lua` | Integration | Requests through a running Kong, in Postgres and DB-less mode |
+
+Unit tests only:
+
+```bash
+KONG_VERSION=3.14.0.x pongo run spec/schedule-outage/01-schema_spec.lua spec/schedule-outage/03-handler_spec.lua
+```
+
+All tests, on the LTS and the latest version:
+
+```bash
+KONG_VERSION=3.14.0.x pongo run
+KONG_VERSION=3.16.0.x pongo run
+```
+
+Lint, and stop the test containers when finished:
+
+```bash
 pongo lint
 pongo down
 ```

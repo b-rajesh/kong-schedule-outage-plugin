@@ -20,4 +20,6 @@ ignore = {
 
 files["spec/**/*.lua"] = {
   std = "ngx_lua+busted",
+  -- the handler unit tests replace ngx.time, kong and setmetatable with stubs
+  globals = { "_G", "ngx", "setmetatable" },
 }

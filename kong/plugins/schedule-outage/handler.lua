@@ -102,14 +102,32 @@ end
 
 -- Plugin config tables are replaced on every configuration change, so a
 -- weak-keyed cache parses each schedule once and is collected with it.
-local schedules = setmetatable({}, { __mode = "k" })
+-- Kong's strict Lua sandbox, which streamed plugins may run under, does not
+-- expose setmetatable. Without it the cache holds strong references and is
+-- cleared once it reaches MAX_STRONG_ENTRIES, so old configs cannot pile up.
+local MAX_STRONG_ENTRIES = 1024
+
+-- pcall guards against sandboxes that raise on unknown globals.
+local _, set_mt = pcall(function() return setmetatable end)
+local weak = type(set_mt) == "function"
+local schedules = weak and set_mt({}, { __mode = "k" }) or {}
+local entries = 0
 
 local function get_schedule(conf)
   local schedule = schedules[conf]
-  if not schedule then
-    schedule = build_schedule(conf)
-    schedules[conf] = schedule
+  if schedule then
+    return schedule
   end
+
+  if not weak then
+    if entries >= MAX_STRONG_ENTRIES then
+      schedules, entries = {}, 0
+    end
+    entries = entries + 1
+  end
+
+  schedule = build_schedule(conf)
+  schedules[conf] = schedule
   return schedule
 end
 
