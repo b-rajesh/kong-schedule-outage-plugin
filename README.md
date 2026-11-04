@@ -13,10 +13,6 @@ and announces upcoming windows to clients.
 | Konnect, Dedicated Cloud Gateways | Supported through plugin streaming, see [Deploying to Konnect](#deploying-to-konnect) |
 | Konnect, Serverless Gateways | Not supported (Konnect does not allow custom plugins there) |
 
-## Other Contributors
-Hugo Muller-Downing
-Chris McDonald
-
 ## Behaviour
 
 | Time | Result |
