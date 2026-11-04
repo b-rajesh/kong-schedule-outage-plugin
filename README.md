@@ -5,13 +5,24 @@ and announces upcoming windows to clients.
 
 ## Compatibility
 
-| Platform | Status |
+The same plugin code runs on every supported version. What depends on the
+version is how the plugin gets onto the gateway.
+
+| Deployment | Gateway 3.14 (LTS) | Gateway 3.15 and later |
+|---|---|---|
+| Konnect, self-managed hybrid data planes | Supported. Upload `schema.lua` to the control plane and install both files on every data plane. | Supported. Install the files as on 3.14, or stream the plugin from the control plane (`custom_plugin_streaming_enabled=on`). |
+| Konnect, Dedicated Cloud Gateways | Not supported. These gateways take custom plugins only through plugin streaming, which Kong has confirmed is not available on 3.14. | Supported through plugin streaming. |
+| Konnect, Serverless Gateways | Not supported. Konnect does not allow custom plugins there. | Not supported. |
+| Self-managed Kong Gateway (traditional or DB-less) | Supported. Install both files on every node. | Supported. Install the files, or use plugin streaming. |
+
+See [Deploying to Konnect](#deploying-to-konnect) for the steps.
+
+Tested versions:
+
+| Version | Result |
 |---|---|
 | Kong Gateway 3.14.0.13 (LTS) | Tested (Postgres and DB-less) |
 | Kong Gateway 3.16.0.0 | Tested (Postgres and DB-less) |
-| Konnect, self-managed hybrid data planes | Supported |
-| Konnect, Dedicated Cloud Gateways | Supported on Gateway 3.15 and later, through plugin streaming. Not available on 3.14. See [Deploying to Konnect](#deploying-to-konnect) |
-| Konnect, Serverless Gateways | Not supported (Konnect does not allow custom plugins there) |
 
 ## Behaviour
 
