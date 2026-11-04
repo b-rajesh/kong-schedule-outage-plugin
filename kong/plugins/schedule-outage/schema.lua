@@ -31,7 +31,14 @@ local window = {
 return {
   name = "schedule-outage",
   fields = {
+    -- The plugin runs before authentication, so consumers and consumer groups
+    -- are not known yet: scoping to either would never match.
     { consumer = { type = "foreign", reference = "consumers", eq = null } },
+    { consumer_group = { type = "foreign", reference = "consumer_groups", eq = null } },
+    -- HTTP only. On gRPC, the JSON outage body would bypass Kong's gRPC
+    -- status translation.
+    { protocols = { type = "set", required = true, default = { "http", "https" },
+                    elements = { type = "string", one_of = { "http", "https" } } } },
     { config = {
         type = "record",
         fields = {

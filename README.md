@@ -10,7 +10,7 @@ and announces upcoming windows to clients.
 | Kong Gateway 3.14.0.13 (LTS) | Tested (Postgres and DB-less) |
 | Kong Gateway 3.16.0.0 | Tested (Postgres and DB-less) |
 | Konnect, self-managed hybrid data planes | Supported |
-| Konnect, Dedicated Cloud Gateways | Supported through plugin streaming, see [Deploying to Konnect](#deploying-to-konnect) |
+| Konnect, Dedicated Cloud Gateways | Supported on Gateway 3.15 and later, through plugin streaming. Not available on 3.14. See [Deploying to Konnect](#deploying-to-konnect) |
 | Konnect, Serverless Gateways | Not supported (Konnect does not allow custom plugins there) |
 
 ## Behaviour
@@ -22,7 +22,15 @@ and announces upcoming windows to clients.
 | Outside any window | Plugin does nothing |
 
 Overlapping windows are merged. A window whose `start_time` is not before its
-`end_time` is logged and ignored, so a bad schedule never causes an outage.
+`end_time`, or a date that does not exist, is logged as an error and ignored,
+so a bad schedule never causes an outage. If every window is invalid, the
+plugin logs at `crit` level, because no outage will be enforced at all. The
+schema cannot check window order (Konnect does not run custom validators), so
+check it before deploying, for example in CI.
+
+The announcement header is added to every response during the lead time,
+including upstream errors such as 502. It describes the next scheduled
+window, not the cause of the error.
 
 During an outage:
 
@@ -89,9 +97,12 @@ Standards considered and not used:
 | `config.response_content_type` | no | `application/json` with `response_body`, otherwise `application/problem+json` | Outage `Content-Type`. |
 | `config.response_headers` | no | | Extra outage response headers. Values may use placeholders. |
 
-The plugin can be applied globally, or to a service or route. It cannot be
-scoped to a consumer: it runs before authentication (priority 1500), so that
-callers get a 503 rather than a 401 during an outage.
+The plugin can be applied globally, or to a service or route, on `http` and
+`https` only. It cannot be scoped to a consumer or consumer group: it runs
+before authentication (priority 1500), so that callers get a 503 rather than
+a 401 during an outage, and at that point the consumer is not yet known. gRPC
+is excluded because a JSON outage body would bypass Kong's gRPC status
+translation.
 
 ### decK example
 
@@ -133,7 +144,7 @@ The outage body can follow any format your APIs already use. Set
 | `{message}` | `message`, or empty |
 | `{start_time}` / `{end_time}` | The active window, RFC 3339 UTC |
 | `{retry_after}` | Seconds until the window ends |
-| `{request_id}` | Kong's request id (nginx `$request_id`) |
+| `{request_id}` | Kong's request ID (`kong.request.get_id()`), the value Kong uses for `X-Kong-Request-Id` |
 
 When the content type contains `json`, values are escaped for use inside JSON
 strings, so a message with quotes or newlines cannot break the body. Unknown
@@ -207,14 +218,18 @@ both deployment models.
 
 ### Dedicated Cloud Gateways (streamed plugin)
 
+Custom plugin streaming requires **Kong Gateway 3.15 or later**; Kong has
+confirmed it is not available on 3.14 LTS. A Dedicated Cloud Gateway that needs
+this plugin must therefore run 3.15 or later.
+
 Upload `handler.lua` and `schema.lua` as a streamed custom plugin (Gateway
 Manager > Plugins > Custom plugin, or decK). Konnect distributes it to every
 data plane in the control plane.
 
-Kong's streaming documentation lists Gateway 3.15 as the minimum version. Check
-with Kong whether streaming is available for a Dedicated Cloud Gateway running
-3.14. If it is not, either run the gateway on 3.15 or later, or ask Kong support
-to deploy the plugin manually.
+Streaming is also available on self-managed data planes from 3.15, as an
+alternative to installing the files on each node. It must be enabled with
+[`custom_plugin_streaming_enabled`](https://developer.konghq.com/gateway/configuration/#custom-plugin-streaming-enabled)
+(`KONG_CUSTOM_PLUGIN_STREAMING_ENABLED=on`).
 
 ## Upgrading from 0.1
 
@@ -248,7 +263,7 @@ minutes.
 | Spec | Type | What it covers |
 |---|---|---|
 | `spec/schedule-outage/01-schema_spec.lua` | Unit | Configuration validation and defaults |
-| `spec/schedule-outage/03-handler_spec.lua` | Unit | UTC conversion, window boundaries, invalid windows, problem response, response templates and custom headers, behaviour without `setmetatable` (strict Lua sandbox). Kong is not started; the PDK and clock are stubbed. |
+| `spec/schedule-outage/03-handler_spec.lua` | Unit | UTC conversion, window boundaries, invalid windows, problem response and titles, response templates and custom headers, schedule caching (including read-only configs and no `setmetatable`). Kong is not started; the PDK and clock are stubbed. |
 | `spec/schedule-outage/02-access_spec.lua` | Integration | Requests through a running Kong, in Postgres and DB-less mode |
 
 Unit tests only:

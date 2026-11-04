@@ -22,16 +22,49 @@ local RFC3339_UTC = "^(%d%d%d%d)%-(%d%d)%-(%d%d)T(%d%d):(%d%d):(%d%d)Z$"
 
 local DAYS_IN_MONTH = { 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 }
 
+-- IANA reason phrases (RFC 9110 and later) for the allowed 400 to 599 range.
+-- Unassigned or unused codes, such as 418, get no title: RFC 9457 makes the
+-- member optional.
 local STATUS_TITLES = {
+  [400] = "Bad Request",
+  [401] = "Unauthorized",
+  [402] = "Payment Required",
   [403] = "Forbidden",
   [404] = "Not Found",
+  [405] = "Method Not Allowed",
+  [406] = "Not Acceptable",
+  [407] = "Proxy Authentication Required",
+  [408] = "Request Timeout",
+  [409] = "Conflict",
   [410] = "Gone",
+  [411] = "Length Required",
+  [412] = "Precondition Failed",
+  [413] = "Content Too Large",
+  [414] = "URI Too Long",
+  [415] = "Unsupported Media Type",
+  [416] = "Range Not Satisfiable",
+  [417] = "Expectation Failed",
+  [421] = "Misdirected Request",
+  [422] = "Unprocessable Content",
   [423] = "Locked",
+  [424] = "Failed Dependency",
+  [425] = "Too Early",
+  [426] = "Upgrade Required",
+  [428] = "Precondition Required",
   [429] = "Too Many Requests",
+  [431] = "Request Header Fields Too Large",
+  [451] = "Unavailable For Legal Reasons",
   [500] = "Internal Server Error",
+  [501] = "Not Implemented",
   [502] = "Bad Gateway",
   [503] = "Service Unavailable",
   [504] = "Gateway Timeout",
+  [505] = "HTTP Version Not Supported",
+  [506] = "Variant Also Negotiates",
+  [507] = "Insufficient Storage",
+  [508] = "Loop Detected",
+  [510] = "Not Extended",
+  [511] = "Network Authentication Required",
 }
 
 local function is_leap(y)
@@ -69,8 +102,10 @@ local function to_epoch(value)
 end
 
 -- Parses, validates, sorts and merges the configured windows into disjoint
--- intervals. Invalid windows are logged and ignored (fail open: a bad
--- schedule must never cause an outage of its own).
+-- intervals, each with its announcement header value prebuilt. Invalid
+-- windows are logged and ignored (fail open: a bad schedule must never cause
+-- an outage of its own); if none is valid, that is logged as critical because
+-- no outage will be enforced at all.
 local function build_schedule(conf)
   local parsed = {}
   for i, w in ipairs(conf.windows) do
@@ -83,6 +118,10 @@ local function build_schedule(conf)
     else
       parsed[#parsed + 1] = { start = start, stop = stop, start_time = w.start_time, end_time = w.end_time }
     end
+  end
+
+  if #parsed == 0 then
+    kong.log.crit("all ", #conf.windows, " configured windows are invalid: no outage will be enforced")
   end
 
   sort(parsed, function(a, b) return a.start < b.start end)
@@ -98,37 +137,31 @@ local function build_schedule(conf)
       merged[#merged + 1] = w
     end
   end
+
+  for _, w in ipairs(merged) do
+    w.announcement = 'start="' .. w.start_time .. '", end="' .. w.end_time .. '"'
+  end
   return merged
 end
 
--- Plugin config tables are replaced on every configuration change, so a
--- weak-keyed cache parses each schedule once and is collected with it.
--- Kong's strict Lua sandbox, which streamed plugins may run under, does not
--- expose setmetatable. Without it the cache holds strong references and is
--- cleared once it reaches MAX_STRONG_ENTRIES, so old configs cannot pile up.
-local MAX_STRONG_ENTRIES = 1024
+-- The parsed schedule is stored on the config table itself. Kong passes the
+-- same table for a plugin instance until its configuration changes (and adds
+-- its own `__plugin_id` and `__key__` fields to it), then replaces it, so the
+-- schedule is parsed once per configuration and collected with it.
+local SCHEDULE_KEY = "__schedule_outage"
 
--- pcall guards against sandboxes that raise on unknown globals.
-local _, set_mt = pcall(function() return setmetatable end)
-local weak = type(set_mt) == "function"
-local schedules = weak and set_mt({}, { __mode = "k" }) or {}
-local entries = 0
+local function store_schedule(conf, schedule)
+  conf[SCHEDULE_KEY] = schedule
+end
 
 local function get_schedule(conf)
-  local schedule = schedules[conf]
-  if schedule then
-    return schedule
+  local schedule = conf[SCHEDULE_KEY]
+  if not schedule then
+    schedule = build_schedule(conf)
+    -- If a runtime ever hands plugins a read-only config, parse per request
+    -- rather than fail.
+    pcall(store_schedule, conf, schedule)
   end
-
-  if not weak then
-    if entries >= MAX_STRONG_ENTRIES then
-      schedules, entries = {}, 0
-    end
-    entries = entries + 1
-  end
-
-  schedule = build_schedule(conf)
-  schedules[conf] = schedule
   return schedule
 end
 
@@ -144,12 +177,6 @@ end
 -- Escapes a value for use inside a JSON string literal.
 local function json_escape(value)
   return (value:gsub('[%c"\\]', json_escape_char))
-end
-
--- nginx's per-request id; empty when unavailable (e.g. outside a request).
-local function request_id()
-  local ok, id = pcall(function() return ngx.var.request_id end)
-  return ok and type(id) == "string" and id or ""
 end
 
 --- Replaces `{name}` placeholders with `values[name]`. Unknown placeholders
@@ -187,7 +214,7 @@ local function reject(conf, window, now)
     start_time = window.start_time,
     end_time = window.end_time,
     retry_after = retry_after,
-    request_id = request_id(),
+    request_id = kong.request.get_id(),
   }
 
   local headers = { ["Cache-Control"] = "no-store" }
@@ -231,8 +258,7 @@ function ScheduleOutageHandler:access(conf)
       -- Windows are sorted: this is the next upcoming one.
       local lead = conf.announce_lead_time
       if conf.announce and (lead == 0 or window.start - now <= lead) then
-        kong.ctx.plugin.announcement =
-          'start="' .. window.start_time .. '", end="' .. window.end_time .. '"'
+        kong.ctx.plugin.announcement = window.announcement
       end
       return
     end

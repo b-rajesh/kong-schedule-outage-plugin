@@ -67,6 +67,31 @@ describe(PLUGIN_NAME .. ": (schema)", function()
     assert.is_truthy(err.config.announce_lead_time)
   end)
 
+  describe("scope", function()
+    it("defaults protocols to http and https", function()
+      local ok = assert(v({ windows = { WINDOW } }, schema_def))
+      table.sort(ok.protocols)
+      assert.same({ "http", "https" }, ok.protocols)
+    end)
+
+    it("rejects gRPC protocols", function()
+      local _, err = v({ windows = { WINDOW } }, schema_def, { protocols = { "grpc" } })
+      assert.is_truthy(err.protocols)
+    end)
+
+    it("rejects consumer scoping", function()
+      local _, err = v({ windows = { WINDOW } }, schema_def,
+                       { consumer = { id = "6f7e8a1c-2b3d-4e5f-8a9b-0c1d2e3f4a5b" } })
+      assert.is_truthy(err.consumer)
+    end)
+
+    it("rejects consumer group scoping", function()
+      local _, err = v({ windows = { WINDOW } }, schema_def,
+                       { consumer_group = { id = "6f7e8a1c-2b3d-4e5f-8a9b-0c1d2e3f4a5b" } })
+      assert.is_truthy(err.consumer_group)
+    end)
+  end)
+
   describe("custom response", function()
     it("is optional", function()
       -- Kong fills unset optional fields with ngx.null.

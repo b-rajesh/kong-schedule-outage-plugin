@@ -40,10 +40,10 @@ local function window(start_time, end_time)
 end
 
 describe(PLUGIN_NAME .. ": (handler)", function()
-  local handler, exits, headers, errors
+  local handler, exits, headers, errors, crits
 
   before_each(function()
-    exits, headers, errors = {}, {}, {}
+    exits, headers, errors, crits = {}, {}, {}, {}
 
     _G.ngx = _G.ngx or {}
     real_ngx_time = ngx.time
@@ -52,7 +52,11 @@ describe(PLUGIN_NAME .. ": (handler)", function()
     real_kong = _G.kong
     _G.kong = {
       ctx = { plugin = {} },
-      log = { err = function(...) errors[#errors + 1] = table.concat({ ... }) end },
+      log = {
+        err = function(...) errors[#errors + 1] = table.concat({ ... }) end,
+        crit = function(...) crits[#crits + 1] = table.concat({ ... }) end,
+      },
+      request = { get_id = function() return "a1b2c3d4" end },
       response = {
         exit = function(status, body, hdrs)
           exits[#exits + 1] = { status = status, body = body, headers = hdrs }
@@ -128,6 +132,22 @@ describe(PLUGIN_NAME .. ": (handler)", function()
       assert.is_nil(request(new_conf({ window("2026-12-01T06:00:00Z", "2026-12-01T02:00:00Z") })))
       assert.matches("start_time must be before end_time", errors[1])
     end)
+
+    it("logs a critical message when every window is invalid", function()
+      now = DEC_01_0200
+      request(new_conf({ window("2026-02-30T00:00:00Z", "2026-12-31T00:00:00Z"),
+                         window("2026-12-01T06:00:00Z", "2026-12-01T02:00:00Z") }))
+      assert.equal(1, #crits)
+      assert.matches("all 2 configured windows are invalid", crits[1], 1, true)
+    end)
+
+    it("does not log a critical message when one window is valid", function()
+      now = DEC_01_0200
+      request(new_conf({ window("2026-02-30T00:00:00Z", "2026-12-31T00:00:00Z"),
+                         window("2026-12-01T02:00:00Z", "2026-12-01T06:00:00Z") }))
+      assert.equal(1, #errors)
+      assert.equal(0, #crits)
+    end)
   end)
 
   describe("response", function()
@@ -148,6 +168,17 @@ describe(PLUGIN_NAME .. ": (handler)", function()
     end)
   end)
 
+  describe("problem title", function()
+    for status, title in pairs({ [501] = "Not Implemented", [507] = "Insufficient Storage",
+                                 [451] = "Unavailable For Legal Reasons" }) do
+      it("is the IANA reason phrase for " .. status, function()
+        now = DEC_01_0200
+        local w = window("2026-12-01T02:00:00Z", "2026-12-01T06:00:00Z")
+        assert.equal(title, request(new_conf({ w }, { status_code = status })).body.title)
+      end)
+    end
+  end)
+
   describe("response template", function()
     local DEC_01 = { start_time = "2026-12-01T02:00:00Z", end_time = "2026-12-01T06:00:00Z" }
 
@@ -162,7 +193,7 @@ describe(PLUGIN_NAME .. ": (handler)", function()
       assert.same({
         s = 503, m = "Back soon",
         from = "2026-12-01T02:00:00Z", to = "2026-12-01T06:00:00Z",
-        retry = DEC_01_0600 - DEC_01_0200, id = "",
+        retry = DEC_01_0600 - DEC_01_0200, id = "a1b2c3d4",
       }, cjson.decode(exit.body))
     end)
 
@@ -243,31 +274,50 @@ describe(PLUGIN_NAME .. ": (handler)", function()
     end)
   end)
 
-  describe("without setmetatable (strict Lua sandbox)", function()
-    before_each(function()
+  describe("schedule cache", function()
+    local function mixed_conf()
+      return new_conf({ window("2026-02-30T00:00:00Z", "2026-12-31T00:00:00Z"),
+                        window("2026-12-01T02:00:00Z", "2026-12-01T06:00:00Z") })
+    end
+
+    it("parses each configuration once and stores it on the config", function()
+      local conf = mixed_conf()
+      now = DEC_01_0200 - 1
+      request(conf)
+      request(conf)
+      assert.equal(1, #errors)
+      assert.is_table(conf.__schedule_outage)
+    end)
+
+    it("parses a new configuration again", function()
+      now = DEC_01_0200 - 1
+      request(mixed_conf())
+      request(mixed_conf())
+      assert.equal(2, #errors)
+    end)
+
+    it("still enforces windows when the config is read-only", function()
+      local readonly = setmetatable({}, {
+        __index = mixed_conf(),
+        __newindex = function() error("read-only config") end,
+      })
+      now = DEC_01_0200
+      assert.equal(503, request(readonly).status)
+      exits = {}
+      assert.equal(503, request(readonly).status)
+      assert.equal(2, #errors)
+    end)
+
+    it("loads without setmetatable (strict Lua sandbox)", function()
       local real_setmetatable = setmetatable
       _G.setmetatable = nil
       local ok, result = pcall(load_handler)
       _G.setmetatable = real_setmetatable
       assert(ok, result)
       handler = result
-    end)
 
-    it("loads and enforces windows", function()
-      local conf = new_conf({ window("2026-12-01T02:00:00Z", "2026-12-01T06:00:00Z") })
-      now = DEC_01_0200 - 1
-      assert.is_nil(request(conf))
       now = DEC_01_0200
-      assert.equal(503, request(conf).status)
-    end)
-
-    it("keeps working after the cache is cleared", function()
-      now = DEC_01_0200
-      for i = 1, 1100 do
-        exits = {}
-        local conf = new_conf({ window("2026-12-01T02:00:00Z", "2026-12-01T06:00:00Z") })
-        assert.equal(503, request(conf).status, "request " .. i)
-      end
+      assert.equal(503, request(new_conf({ window("2026-12-01T02:00:00Z", "2026-12-01T06:00:00Z") })).status)
     end)
   end)
 end)
