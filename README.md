@@ -22,6 +22,7 @@ Tested versions:
 | Version | Result |
 |---|---|
 | Kong Gateway 3.14.0.13 (LTS) | Tested (Postgres and DB-less) |
+| Kong Gateway 3.15.0.3 | Tested (Postgres and DB-less). Minimum for Dedicated Cloud Gateways. |
 | Kong Gateway 3.16.0.0 | Tested (Postgres and DB-less) |
 
 ## Behaviour
