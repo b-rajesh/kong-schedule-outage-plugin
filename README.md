@@ -1,53 +1,299 @@
 # Schedule Outage Plugin
-This is a Schedule Outage plugin for Kong, written in Lua. It allows outages to be scheduled from upstream in kong. 
 
-## Other Contributors
-Hugo Muller-Downing
-Chris McDonald
+A Kong Gateway plugin that rejects traffic during scheduled maintenance windows
+and announces upcoming windows to clients.
 
-## Usage
-### Configuration
-| Input Field| Required/Optional|Data Type|Description |
+## Compatibility
+
+The same plugin code runs on every supported version. What depends on the
+version is how the plugin gets onto the gateway.
+
+| Deployment | Gateway 3.14 (LTS) | Gateway 3.15 and later |
+|---|---|---|
+| Konnect, self-managed hybrid data planes | Supported. Upload `schema.lua` to the control plane and install both files on every data plane. | Supported. Install the files as on 3.14, or stream the plugin from the control plane (`custom_plugin_streaming_enabled=on`). |
+| Konnect, Dedicated Cloud Gateways | Not supported. These gateways take custom plugins only through plugin streaming, which Kong has confirmed is not available on 3.14. | Supported through plugin streaming. |
+| Konnect, Serverless Gateways | Not supported. Konnect does not allow custom plugins there. | Not supported. |
+| Self-managed Kong Gateway (traditional or DB-less) | Supported. Install both files on every node. | Supported. Install the files, or use plugin streaming. |
+
+See [Deploying to Konnect](#deploying-to-konnect) for the steps.
+
+Tested versions:
+
+| Version | Result |
+|---|---|
+| Kong Gateway 3.14.0.13 (LTS) | Tested (Postgres and DB-less) |
+| Kong Gateway 3.15.0.3 | Tested (Postgres and DB-less). Minimum for Dedicated Cloud Gateways. |
+| Kong Gateway 3.16.0.0 | Tested (Postgres and DB-less) |
+
+## Behaviour
+
+| Time | Result |
+|---|---|
+| Before a window, within `announce_lead_time` | Request proxied; response carries the announcement header |
+| Inside a window `[start_time, end_time)` | Request rejected with `status_code` (default 503) |
+| Outside any window | Plugin does nothing |
+
+Overlapping windows are merged. A window whose `start_time` is not before its
+`end_time`, or a date that does not exist, is logged as an error and ignored,
+so a bad schedule never causes an outage. If every window is invalid, the
+plugin logs at `crit` level, because no outage will be enforced at all. The
+schema cannot check window order (Konnect does not run custom validators), so
+check it before deploying, for example in CI.
+
+The announcement header is added to every response during the lead time,
+including upstream errors such as 502. It describes the next scheduled
+window, not the cause of the error.
+
+During an outage:
+
+```http
+HTTP/1.1 503 Service Unavailable
+Content-Type: application/problem+json
+Cache-Control: no-store
+Retry-After: 5400
+
+{
+  "type": "about:blank",
+  "title": "Service Unavailable",
+  "status": 503,
+  "detail": "Scheduled maintenance",
+  "outage_start": "2026-12-01T02:00:00Z",
+  "outage_end": "2026-12-01T06:00:00Z"
+}
+```
+
+Before an outage:
+
+```http
+Planned-Outage: start="2026-12-01T02:00:00Z", end="2026-12-01T06:00:00Z"
+```
+
+## Open standards
+
+There is no single standard for scheduled maintenance in HTTP. The plugin
+follows the published standard for each part of the behaviour instead.
+
+| Concern | Standard | How the plugin applies it |
+|---|---|---|
+| Outage status | [RFC 9110, section 15.6.4](https://www.rfc-editor.org/rfc/rfc9110#section-15.6.4) | `503 Service Unavailable` is the status defined for temporary unavailability such as maintenance, so it is the default. `status_code` is limited to 400 to 599. |
+| When to retry | [RFC 9110, section 10.2.3](https://www.rfc-editor.org/rfc/rfc9110#section-10.2.3) | `Retry-After` carries the number of seconds until the current window ends. |
+| Error body | [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) | The outage response is a Problem Details document (`application/problem+json`) with `type`, `title`, `status`, `detail` and the extension members `outage_start` and `outage_end`. RFC 9457 replaces RFC 7807. |
+| Caching | [RFC 9111, section 5.2.2.5](https://www.rfc-editor.org/rfc/rfc9111#section-5.2.2.5) | `Cache-Control: no-store` stops caches and CDNs from storing the outage response and serving it after the window ends. |
+| Timestamps | [RFC 3339, section 5.6](https://www.rfc-editor.org/rfc/rfc3339#section-5.6) | Window times use the RFC 3339 profile of ISO 8601, in UTC (`Z`) only, so daylight saving and timezone offsets cannot shift a window. |
+| Announcement header format | [RFC 9651, section 3.2](https://www.rfc-editor.org/rfc/rfc9651#section-3.2) | The announcement value is a Structured Field dictionary, `start="...", end="..."`, which any Structured Fields parser can read. |
+| Announcement header name | [RFC 6648](https://www.rfc-editor.org/rfc/rfc6648) and [RFC 9110, section 5.1](https://www.rfc-editor.org/rfc/rfc9110#section-5.1) | The default name `Planned-Outage` has no `X-` prefix, as RFC 6648 recommends. Custom names must be valid RFC 9110 field names. |
+
+No standard defines a header for announcing planned maintenance, so
+`Planned-Outage` is specific to this plugin.
+
+Standards considered and not used:
+
+| Standard | Reason |
+|---|---|
+| [RFC 8594](https://www.rfc-editor.org/rfc/rfc8594) `Sunset` | Announces that a resource will be removed permanently, not that it will be unavailable for a while. |
+| [RFC 9745](https://www.rfc-editor.org/rfc/rfc9745) `Deprecation` | Marks a resource as deprecated, which an outage is not. |
+| [RFC 5545](https://www.rfc-editor.org/rfc/rfc5545) iCalendar | Suited to publishing maintenance calendars outside HTTP, for example on a status page. That is outside the scope of a gateway plugin. |
+
+## Configuration
+
+| Field | Required | Default | Description |
 |---|---|---|---|
-|config.from| Required|ISO8601 Date String|An ISO8601 date string with UTC, e.g. 2016-09-23T01:18:33Z, which defines the start datetime of the outage range.
-|config.to|Required| ISO8601 Date String| An ISO8601 date string with UTC, e.g. 2016-09-23T01:18:33Z, which defines the end datetime of the outage range.
-|config.statusCode|Required|Integer| A status code between 100 and 599 (inclusive) to be sent in the body of the response, and as the HTTP Status of the response. 
-|config.statusMessage|Optional|String|A status message to be displayed in the body of the response. If not defined, the json body is not sent in the response.
-|config.plannedHeader|Optional|String|The title of the header that will displayed in the response, when a future outage is scheduled. If not defined, will default to 'PLANNED-OUTAGE'
+| `config.windows` | yes | | Array (1 to 100) of `{ start_time, end_time }`, RFC 3339 UTC, e.g. `2026-12-01T02:00:00Z`. Start is inclusive, end exclusive. |
+| `config.status_code` | no | `503` | Status returned during an outage, 400 to 599. |
+| `config.message` | no | | `detail` of the problem response, and the `{message}` placeholder. |
+| `config.retry_after` | no | `true` | Send `Retry-After` during an outage. |
+| `config.announce` | no | `true` | Announce the next upcoming window. |
+| `config.announce_header` | no | `Planned-Outage` | Name of the announcement header. |
+| `config.announce_lead_time` | no | `604800` (7 days) | Seconds before a window to start announcing it; `0` = always. |
+| `config.response_body` | no | RFC 9457 problem document | Outage body template. See [Custom response](#custom-response). |
+| `config.response_content_type` | no | `application/json` with `response_body`, otherwise `application/problem+json` | Outage `Content-Type`. |
+| `config.response_headers` | no | | Extra outage response headers. Values may use placeholders. |
 
-Here is a sample CURL command for enablind the plugin 
+The plugin can be applied globally, or to a service or route, on `http` and
+`https` only. It cannot be scoped to a consumer or consumer group: it runs
+before authentication (priority 1500), so that callers get a 503 rather than
+a 401 during an outage, and at that point the consumer is not yet known. gRPC
+is excluded because a JSON outage body would bypass Kong's gRPC status
+translation.
 
-`curl -X POST kong:8001/apis/{api-name}/plugins \`
+### decK example
 
-`--data "name=schedule-outage" \`
+```yaml
+_format_version: "3.0"
+plugins:
+  - name: schedule-outage
+    service: orders
+    config:
+      message: Scheduled maintenance
+      windows:
+        - start_time: "2026-12-01T02:00:00Z"
+          end_time: "2026-12-01T06:00:00Z"
+        - start_time: "2027-01-15T22:00:00Z"
+          end_time: "2027-01-16T01:00:00Z"
+```
 
-`--data "config.statusMessage=Currently under maintenance" \`
+### Admin API example
 
-`--data "config.plannedHeader=OUTAGE-PLANNED" \`
+```bash
+curl -X POST http://localhost:8001/services/orders/plugins \
+  --json '{
+    "name": "schedule-outage",
+    "config": {
+      "message": "Scheduled maintenance",
+      "windows": [{ "start_time": "2026-12-01T02:00:00Z", "end_time": "2026-12-01T06:00:00Z" }]
+    }
+  }'
+```
 
-`--data "config.from=2017-06-07T05:55:05Z" \`
+### Custom response
 
-`--data "config.to=2017-06-07T11:55:05Z" \`
+The outage body can follow any format your APIs already use. Set
+`response_body` to a template; these placeholders are replaced:
 
-`--data "config.statusCode=503"`
+| Placeholder | Value |
+|---|---|
+| `{status}` | `status_code`, e.g. `503` |
+| `{message}` | `message`, or empty |
+| `{start_time}` / `{end_time}` | The active window, RFC 3339 UTC |
+| `{retry_after}` | Seconds until the window ends |
+| `{request_id}` | Kong's request ID (`kong.request.get_id()`), the value Kong uses for `X-Kong-Request-Id` |
 
-### skip_outage_check
+When the content type contains `json`, values are escaped for use inside JSON
+strings, so a message with quotes or newlines cannot break the body. Unknown
+placeholders are left unchanged. The template itself is not validated: Konnect
+does not run custom schema validators, so check that it is valid JSON before
+deploying it.
 
-If skip_outage_check URL parameter is appended to the request, the check is skipped and the planned outage header is not added.
+`response_headers` adds headers to the outage response, after the defaults, so
+it can also replace `Cache-Control` or `Retry-After`. Header values may use
+the same placeholders; control characters are removed from them.
 
-If it is appended to the request during an outage, the modified response will still occur, blocking usage of the API.
+Example, an error list in the shape used by the Australian Consumer Data
+Right standards:
 
-Example URL:
-http://localhost:8000/{api-name}?skip_outage_check=1
+```yaml
+config:
+  message: Core banking upgrade
+  response_body: >-
+    {"errors":[{"code":"urn:au-cds:error:cds-all:Service/Unavailable",
+    "title":"Service Unavailable","detail":"{message}","meta":{}}]}
+  response_headers:
+    X-Correlation-Id: "{request_id}"
+  windows:
+    - start_time: "2026-12-01T02:00:00Z"
+      end_time: "2026-12-01T06:00:00Z"
+```
 
+```http
+HTTP/1.1 503 Service Unavailable
+Content-Type: application/json
+Cache-Control: no-store
+Retry-After: 5400
+X-Correlation-Id: 5d41402abc4b2a76b9719d911017c592
 
+{"errors":[{"code":"urn:au-cds:error:cds-all:Service/Unavailable", "title":"Service Unavailable","detail":"Core banking upgrade","meta":{}}]}
+```
+
+The template only shapes this plugin's outage response. Errors from other
+Kong plugins (authentication, rate limiting, unknown routes) are unchanged; to
+reshape those, use Kong's Exit Transformer plugin (Enterprise).
+
+### Letting operators through during an outage
+
+The plugin has no bypass of its own, on purpose: a bypass is an access control
+and belongs in Kong's routing and auth layer. To smoke-test during a window,
+add a dedicated route (for example matching an `Ops-Smoke-Test` header)
+protected by `key-auth` or `ip-restriction`, and do not attach this plugin to
+it. On Kong 3.15+, plugin conditions (CEL) are an alternative.
+
+## Deploying to Konnect
+
+The plugin is two self-contained files: no `require` in the schema, no custom
+schema validators, no timers, no database entities. That meets the rules for
+both deployment models.
+
+### Self-managed hybrid data planes
+
+1. Upload `kong/plugins/schedule-outage/schema.lua` to the control plane
+   (Gateway Manager > Plugins > Custom plugin, or
+   `POST /v2/control-planes/{id}/core-entities/plugin-schemas` with a
+   `lua_schema` body).
+2. Install both files on **every** data plane, e.g. in a custom image:
+
+   ```dockerfile
+   FROM kong/kong-gateway:3.14.0.13
+   COPY kong/plugins/schedule-outage /usr/local/share/lua/5.1/kong/plugins/schedule-outage
+   ENV KONG_PLUGINS=bundled,schedule-outage
+   ```
+
+   or `luarocks make` from this directory.
+
+### Dedicated Cloud Gateways (streamed plugin)
+
+Custom plugin streaming requires **Kong Gateway 3.15 or later**; Kong has
+confirmed it is not available on 3.14 LTS. A Dedicated Cloud Gateway that needs
+this plugin must therefore run 3.15 or later.
+
+Upload `handler.lua` and `schema.lua` as a streamed custom plugin (Gateway
+Manager > Plugins > Custom plugin, or decK). Konnect distributes it to every
+data plane in the control plane.
+
+Streaming is also available on self-managed data planes from 3.15, as an
+alternative to installing the files on each node. It must be enabled with
+[`custom_plugin_streaming_enabled`](https://developer.konghq.com/gateway/configuration/#custom-plugin-streaming-enabled)
+(`KONG_CUSTOM_PLUGIN_STREAMING_ENABLED=on`).
+
+## Upgrading from 0.1
+
+| 0.1 | 1.0 |
+|---|---|
+| `from` / `to` | `windows[].start_time` / `windows[].end_time` |
+| `statusCode` | `status_code` (now 400 to 599, default 503) |
+| `statusMessage` | `message` |
+| `plannedHeader` (`PLANNED-OUTAGE`) | `announce_header` (`Planned-Outage`) |
+| JSON value in the planned header | Structured Field dictionary `start="...", end="..."` |
+| `{errorCode, errorDescription}` body | RFC 9457 problem document |
+| `?skip_outage_check=1` | Removed; see "Letting operators through" |
+
+1.0 also fixes a bug where windows were read in the node's local timezone
+instead of UTC.
 
 ## Testing
-In order to run the tests, you must have a Kong development environment set up, with the Busted testing framework installed (Instructions on this can be found here: https://github.com/Mashape/kong-vagrant)
 
-Once your development environment is ready, copy the 'schedule-out' directory into your filesystem and run 'luarocks make' from within the schedule-outage directory, which will install it into the Kong plugins directory.
+Tests run with [Pongo](https://github.com/Kong/kong-pongo), which needs Docker.
+Install Pongo once:
 
-The plugin itself can be enabled in kong by running 
-`export KONG_CUSTOM_PLUGINS=myPlugin`
+```bash
+git clone https://github.com/Kong/kong-pongo.git
+ln -s "$(pwd)/kong-pongo/pongo.sh" ~/.local/bin/pongo   # any directory on your PATH
+```
 
-Once enabled, navigate to to the 'schedule-outage' directory you copied into your file system and run `busted busted spec/schedule-outage_spec.lua`
+Kong Enterprise versions have four parts, so use `3.14.0.x` rather than
+`3.14.x`. The first run for a version builds a test image and takes a few
+minutes.
+
+| Spec | Type | What it covers |
+|---|---|---|
+| `spec/schedule-outage/01-schema_spec.lua` | Unit | Configuration validation and defaults |
+| `spec/schedule-outage/03-handler_spec.lua` | Unit | UTC conversion, window boundaries, invalid windows, problem response and titles, response templates and custom headers, schedule caching (including read-only configs and no `setmetatable`). Kong is not started; the PDK and clock are stubbed. |
+| `spec/schedule-outage/02-access_spec.lua` | Integration | Requests through a running Kong, in Postgres and DB-less mode |
+
+Unit tests only:
+
+```bash
+KONG_VERSION=3.14.0.x pongo run spec/schedule-outage/01-schema_spec.lua spec/schedule-outage/03-handler_spec.lua
+```
+
+All tests, on the LTS and the latest version:
+
+```bash
+KONG_VERSION=3.14.0.x pongo run
+KONG_VERSION=3.16.0.x pongo run
+```
+
+Lint, and stop the test containers when finished:
+
+```bash
+pongo lint
+pongo down
+```
