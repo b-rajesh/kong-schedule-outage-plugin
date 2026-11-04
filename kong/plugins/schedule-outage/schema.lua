@@ -52,6 +52,18 @@ return {
           { announce_lead_time = { type = "integer", required = true, default = 604800,
                                    between = { 0, ONE_YEAR },
                                    description = "Seconds before a window starts to begin announcing it; 0 = always." } },
+          { response_body = { type = "string", len_min = 1,
+                              description = "Outage body template with {status}, {message}, {start_time}, "
+                                            .. "{end_time}, {retry_after} and {request_id} placeholders. "
+                                            .. "Default: an RFC 9457 problem document." } },
+          { response_content_type = { type = "string", len_min = 1,
+                                      description = "Outage Content-Type. Default: application/json with "
+                                                    .. "response_body, otherwise application/problem+json." } },
+          { response_headers = { type = "map",
+                                 keys = { type = "string", match = HEADER_NAME },
+                                 values = { type = "string" },
+                                 description = "Extra outage response headers; values may use the "
+                                               .. "response_body placeholders." } },
         },
       },
     },

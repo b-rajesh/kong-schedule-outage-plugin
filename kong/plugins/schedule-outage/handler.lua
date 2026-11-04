@@ -7,6 +7,7 @@
 
 local floor = math.floor
 local sort = table.sort
+local format = string.format
 local time = ngx.time
 
 local ScheduleOutageHandler = {
@@ -131,25 +132,95 @@ local function get_schedule(conf)
   return schedule
 end
 
--- Responds with an RFC 9457 problem document for the active window.
+local JSON_ESCAPES = {
+  ['"'] = '\\"', ["\\"] = "\\\\", ["\b"] = "\\b", ["\f"] = "\\f",
+  ["\n"] = "\\n", ["\r"] = "\\r", ["\t"] = "\\t",
+}
+
+local function json_escape_char(c)
+  return JSON_ESCAPES[c] or format("\\u%04x", c:byte())
+end
+
+-- Escapes a value for use inside a JSON string literal.
+local function json_escape(value)
+  return (value:gsub('[%c"\\]', json_escape_char))
+end
+
+-- nginx's per-request id; empty when unavailable (e.g. outside a request).
+local function request_id()
+  local ok, id = pcall(function() return ngx.var.request_id end)
+  return ok and type(id) == "string" and id or ""
+end
+
+--- Replaces `{name}` placeholders with `values[name]`. Unknown placeholders
+-- are left as they are. With `escape`, values are JSON-string escaped.
+local function render(template, values, escape)
+  return (template:gsub("{([%w_]+)}", function(name)
+    local value = values[name]
+    if value == nil then
+      return nil
+    end
+    value = tostring(value)
+    return escape and json_escape(value) or value
+  end))
+end
+
+-- Returns an optional config value only when it has the expected type, so an
+-- unset field is never mistaken for a value even if it arrives as ngx.null.
+local function optional(value, kind)
+  if type(value) == kind then
+    return value
+  end
+end
+
+-- Responds for the active window: an RFC 9457 problem document by default,
+-- or the configured `response_body` template.
 local function reject(conf, window, now)
   local status = conf.status_code
-  local headers = {
-    ["Content-Type"] = "application/problem+json",
-    ["Cache-Control"] = "no-store",
+  local retry_after = window.stop - now
+  local message = optional(conf.message, "string")
+  local template = optional(conf.response_body, "string")
+  local content_type = optional(conf.response_content_type, "string")
+  local values = {
+    status = status,
+    message = message or "",
+    start_time = window.start_time,
+    end_time = window.end_time,
+    retry_after = retry_after,
+    request_id = request_id(),
   }
+
+  local headers = { ["Cache-Control"] = "no-store" }
   if conf.retry_after then
-    headers["Retry-After"] = tostring(window.stop - now)
+    headers["Retry-After"] = tostring(retry_after)
   end
 
-  return kong.response.exit(status, {
-    type = "about:blank",
-    title = STATUS_TITLES[status],
-    status = status,
-    detail = conf.message,
-    outage_start = window.start_time,
-    outage_end = window.end_time,
-  }, headers)
+  local body
+  if template then
+    content_type = content_type or "application/json"
+    headers["Content-Type"] = content_type
+    body = render(template, values, content_type:find("json", 1, true) ~= nil)
+  else
+    headers["Content-Type"] = content_type or "application/problem+json"
+    body = {
+      type = "about:blank",
+      title = STATUS_TITLES[status],
+      status = status,
+      detail = message,
+      outage_start = window.start_time,
+      outage_end = window.end_time,
+    }
+  end
+
+  -- Custom headers are applied last, so they can override the defaults.
+  -- Control characters are removed: they are not allowed in header values.
+  for name, value in pairs(optional(conf.response_headers, "table") or {}) do
+    if type(value) == "string" then
+      headers[name] = (render(value, values):gsub("%c", ""))
+    end
+  end
+
+  return kong.response.exit(status, body, headers)
 end
 
 function ScheduleOutageHandler:access(conf)

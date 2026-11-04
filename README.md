@@ -80,11 +80,14 @@ Standards considered and not used:
 |---|---|---|---|
 | `config.windows` | yes | | Array (1 to 100) of `{ start_time, end_time }`, RFC 3339 UTC, e.g. `2026-12-01T02:00:00Z`. Start is inclusive, end exclusive. |
 | `config.status_code` | no | `503` | Status returned during an outage, 400 to 599. |
-| `config.message` | no | | `detail` of the problem response. |
+| `config.message` | no | | `detail` of the problem response, and the `{message}` placeholder. |
 | `config.retry_after` | no | `true` | Send `Retry-After` during an outage. |
 | `config.announce` | no | `true` | Announce the next upcoming window. |
 | `config.announce_header` | no | `Planned-Outage` | Name of the announcement header. |
 | `config.announce_lead_time` | no | `604800` (7 days) | Seconds before a window to start announcing it; `0` = always. |
+| `config.response_body` | no | RFC 9457 problem document | Outage body template. See [Custom response](#custom-response). |
+| `config.response_content_type` | no | `application/json` with `response_body`, otherwise `application/problem+json` | Outage `Content-Type`. |
+| `config.response_headers` | no | | Extra outage response headers. Values may use placeholders. |
 
 The plugin can be applied globally, or to a service or route. It cannot be
 scoped to a consumer: it runs before authentication (priority 1500), so that
@@ -118,6 +121,59 @@ curl -X POST http://localhost:8001/services/orders/plugins \
     }
   }'
 ```
+
+### Custom response
+
+The outage body can follow any format your APIs already use. Set
+`response_body` to a template; these placeholders are replaced:
+
+| Placeholder | Value |
+|---|---|
+| `{status}` | `status_code`, e.g. `503` |
+| `{message}` | `message`, or empty |
+| `{start_time}` / `{end_time}` | The active window, RFC 3339 UTC |
+| `{retry_after}` | Seconds until the window ends |
+| `{request_id}` | Kong's request id (nginx `$request_id`) |
+
+When the content type contains `json`, values are escaped for use inside JSON
+strings, so a message with quotes or newlines cannot break the body. Unknown
+placeholders are left unchanged. The template itself is not validated: Konnect
+does not run custom schema validators, so check that it is valid JSON before
+deploying it.
+
+`response_headers` adds headers to the outage response, after the defaults, so
+it can also replace `Cache-Control` or `Retry-After`. Header values may use
+the same placeholders; control characters are removed from them.
+
+Example, an error list in the shape used by the Australian Consumer Data
+Right standards:
+
+```yaml
+config:
+  message: Core banking upgrade
+  response_body: >-
+    {"errors":[{"code":"urn:au-cds:error:cds-all:Service/Unavailable",
+    "title":"Service Unavailable","detail":"{message}","meta":{}}]}
+  response_headers:
+    X-Correlation-Id: "{request_id}"
+  windows:
+    - start_time: "2026-12-01T02:00:00Z"
+      end_time: "2026-12-01T06:00:00Z"
+```
+
+```http
+HTTP/1.1 503 Service Unavailable
+Content-Type: application/json
+Cache-Control: no-store
+Retry-After: 5400
+X-Correlation-Id: 5d41402abc4b2a76b9719d911017c592
+
+{"errors":[{"code":"urn:au-cds:error:cds-all:Service/Unavailable", "title":"Service Unavailable","detail":"Core banking upgrade","meta":{}}]}
+```
+
+The template only shapes this plugin's outage response. Errors from other
+Kong plugins (authentication, rate limiting, unknown routes) are unchanged; to
+reshape those, use Kong's Exit Transformer plugin (Enterprise).
 
 ### Letting operators through during an outage
 
@@ -192,7 +248,7 @@ minutes.
 | Spec | Type | What it covers |
 |---|---|---|
 | `spec/schedule-outage/01-schema_spec.lua` | Unit | Configuration validation and defaults |
-| `spec/schedule-outage/03-handler_spec.lua` | Unit | UTC conversion, window boundaries, invalid windows, problem response, behaviour without `setmetatable` (strict Lua sandbox). Kong is not started; the PDK and clock are stubbed. |
+| `spec/schedule-outage/03-handler_spec.lua` | Unit | UTC conversion, window boundaries, invalid windows, problem response, response templates and custom headers, behaviour without `setmetatable` (strict Lua sandbox). Kong is not started; the PDK and clock are stubbed. |
 | `spec/schedule-outage/02-access_spec.lua` | Integration | Requests through a running Kong, in Postgres and DB-less mode |
 
 Unit tests only:

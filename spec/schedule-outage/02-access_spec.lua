@@ -35,6 +35,10 @@ local FIXTURES = {
                                       window(HOUR, 90 * 60) } },
   ["overlap.test"]    = { windows = { window(-HOUR, 300), window(120, 1200) } },
   ["invalid.test"]    = { windows = { window(-HOUR, -2 * HOUR), window(HOUR, 2 * HOUR) } },
+  ["template.test"]   = { windows = { window(-HOUR, 600) }, message = "Core banking upgrade",
+                          response_body = '{"errors":[{"code":"Service/Unavailable",'
+                                          .. '"detail":"{message}","until":"{end_time}","meta":{}}]}',
+                          response_headers = { ["X-Correlation-Id"] = "{request_id}" } },
 }
 
 for _, strategy in helpers.all_strategies() do
@@ -135,6 +139,20 @@ for _, strategy in helpers.all_strategies() do
           local body = cjson.decode(assert.res_status(503, res))
           assert.equal(FIXTURES["overlap.test"].windows[2].end_time, body.outage_end)
           assert.is_true(tonumber(res.headers["Retry-After"]) > 300)
+        end)
+
+        it("renders the configured response body and headers", function()
+          local res = get("template.test")
+          local raw = assert.res_status(503, res)
+          assert.equal("application/json", res.headers["Content-Type"])
+          assert.matches("^%x+$", res.headers["X-Correlation-Id"])
+          assert.matches('"meta":{}', raw, 1, true)
+          assert.same({ errors = { {
+            code = "Service/Unavailable",
+            detail = "Core banking upgrade",
+            ["until"] = FIXTURES["template.test"].windows[1].end_time,
+            meta = {},
+          } } }, cjson.decode(raw))
         end)
       end)
 

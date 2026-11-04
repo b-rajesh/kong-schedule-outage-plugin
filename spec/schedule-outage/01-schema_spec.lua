@@ -66,4 +66,35 @@ describe(PLUGIN_NAME .. ": (schema)", function()
     local _, err = v({ windows = { WINDOW }, announce_lead_time = -1 }, schema_def)
     assert.is_truthy(err.config.announce_lead_time)
   end)
+
+  describe("custom response", function()
+    it("is optional", function()
+      -- Kong fills unset optional fields with ngx.null.
+      local ok = assert(v({ windows = { WINDOW } }, schema_def))
+      assert.equal(ngx.null, ok.config.response_body)
+      assert.equal(ngx.null, ok.config.response_content_type)
+      assert.equal(ngx.null, ok.config.response_headers)
+    end)
+
+    it("accepts a body template, content type and headers", function()
+      local ok, err = v({
+        windows = { WINDOW },
+        response_body = '{"errors":[{"detail":"{message}"}]}',
+        response_content_type = "application/json",
+        response_headers = { ["X-Outage-End"] = "{end_time}" },
+      }, schema_def)
+      assert.is_nil(err)
+      assert.equal("{end_time}", ok.config.response_headers["X-Outage-End"])
+    end)
+
+    it("rejects an empty body template", function()
+      local _, err = v({ windows = { WINDOW }, response_body = "" }, schema_def)
+      assert.is_truthy(err.config.response_body)
+    end)
+
+    it("rejects an invalid response header name", function()
+      local _, err = v({ windows = { WINDOW }, response_headers = { ["Bad Header"] = "x" } }, schema_def)
+      assert.is_truthy(err.config.response_headers)
+    end)
+  end)
 end)

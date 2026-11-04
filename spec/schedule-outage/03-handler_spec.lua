@@ -1,6 +1,8 @@
 -- Unit tests for the handler. Kong is not started: the `kong` PDK and
 -- `ngx.time` are replaced with stubs so the clock can be set per test.
 
+local cjson = require "cjson"
+
 local PLUGIN_NAME = "schedule-outage"
 local MODULE = "kong.plugins." .. PLUGIN_NAME .. ".handler"
 
@@ -143,6 +145,101 @@ describe(PLUGIN_NAME .. ": (handler)", function()
         outage_start = "2026-12-01T02:00:00Z",
         outage_end = "2026-12-01T06:00:00Z",
       }, exit.body)
+    end)
+  end)
+
+  describe("response template", function()
+    local DEC_01 = { start_time = "2026-12-01T02:00:00Z", end_time = "2026-12-01T06:00:00Z" }
+
+    it("renders every placeholder", function()
+      now = DEC_01_0200
+      local exit = request(new_conf({ DEC_01 }, {
+        message = "Back soon",
+        response_body = '{"s":{status},"m":"{message}","from":"{start_time}","to":"{end_time}",'
+                        .. '"retry":{retry_after},"id":"{request_id}"}',
+      }))
+      assert.equal("application/json", exit.headers["Content-Type"])
+      assert.same({
+        s = 503, m = "Back soon",
+        from = "2026-12-01T02:00:00Z", to = "2026-12-01T06:00:00Z",
+        retry = DEC_01_0600 - DEC_01_0200, id = "",
+      }, cjson.decode(exit.body))
+    end)
+
+    it("produces a custom error shape, e.g. CDR", function()
+      now = DEC_01_0200
+      local exit = request(new_conf({ DEC_01 }, {
+        message = "Core banking upgrade",
+        response_body = '{"errors":[{"code":"urn:au-cds:error:cds-all:Service/Unavailable",'
+                        .. '"title":"Service Unavailable","detail":"{message}","meta":{}}]}',
+      }))
+      assert.equal('{"errors":[{"code":"urn:au-cds:error:cds-all:Service/Unavailable",'
+                   .. '"title":"Service Unavailable","detail":"Core banking upgrade","meta":{}}]}', exit.body)
+    end)
+
+    it("JSON-escapes values for a JSON content type", function()
+      now = DEC_01_0200
+      local msg = 'Quote " backslash \\ newline \n bell \7'
+      local exit = request(new_conf({ DEC_01 }, { message = msg, response_body = '{"m":"{message}"}' }))
+      assert.equal(msg, cjson.decode(exit.body).m)
+    end)
+
+    it("does not escape values for other content types", function()
+      now = DEC_01_0200
+      local exit = request(new_conf({ DEC_01 }, {
+        message = 'He said "soon"',
+        response_body = "<p>{message}</p>",
+        response_content_type = "text/html",
+      }))
+      assert.equal("text/html", exit.headers["Content-Type"])
+      assert.equal('<p>He said "soon"</p>', exit.body)
+    end)
+
+    it("leaves unknown placeholders untouched", function()
+      now = DEC_01_0200
+      local exit = request(new_conf({ DEC_01 }, { response_body = '{"x":"{unknown}","meta":{}}' }))
+      assert.equal('{"x":"{unknown}","meta":{}}', exit.body)
+    end)
+
+    it("uses an empty message when none is configured", function()
+      now = DEC_01_0200
+      local exit = request(new_conf({ DEC_01 }, { response_body = '{"m":"{message}"}' }))
+      assert.equal('{"m":""}', exit.body)
+    end)
+
+    it("treats ngx.null optional fields as unset", function()
+      now = DEC_01_0200
+      local exit = request(new_conf({ DEC_01 }, {
+        message = ngx.null,
+        response_body = ngx.null,
+        response_content_type = ngx.null,
+        response_headers = ngx.null,
+      }))
+      assert.equal("application/problem+json", exit.headers["Content-Type"])
+      assert.equal("about:blank", exit.body.type)
+      assert.is_nil(exit.body.detail)
+    end)
+
+    it("keeps the problem document with only a custom content type", function()
+      now = DEC_01_0200
+      local exit = request(new_conf({ DEC_01 }, { response_content_type = "application/json" }))
+      assert.equal("application/json", exit.headers["Content-Type"])
+      assert.equal("about:blank", exit.body.type)
+    end)
+
+    it("adds custom headers, rendered and able to override defaults", function()
+      now = DEC_01_0200
+      local exit = request(new_conf({ DEC_01 }, {
+        message = "line one\r\nInjected: yes",
+        response_headers = {
+          ["X-Outage-End"] = "{end_time}",
+          ["X-Outage-Message"] = "{message}",
+          ["Cache-Control"] = "no-cache",
+        },
+      }))
+      assert.equal("2026-12-01T06:00:00Z", exit.headers["X-Outage-End"])
+      assert.equal("line oneInjected: yes", exit.headers["X-Outage-Message"])
+      assert.equal("no-cache", exit.headers["Cache-Control"])
     end)
   end)
 
