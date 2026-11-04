@@ -24,17 +24,6 @@ and announces upcoming windows to clients.
 Overlapping windows are merged. A window whose `start_time` is not before its
 `end_time` is logged and ignored, so a bad schedule never causes an outage.
 
-### Standards used
-
-| Concern | Standard |
-|---|---|
-| Outage status | RFC 9110 section 15.6.4 `503 Service Unavailable` |
-| When to retry | RFC 9110 section 10.2.3 `Retry-After` (seconds until the window ends) |
-| Error body | RFC 9457 Problem Details, `application/problem+json` |
-| Caching | `Cache-Control: no-store` (RFC 9111), so caches do not store the outage response |
-| Timestamps | RFC 3339, UTC (`Z`) only |
-| Announcement header | RFC 9651 Structured Field dictionary; no `X-` prefix (RFC 6648) |
-
 During an outage:
 
 ```http
@@ -58,6 +47,32 @@ Before an outage:
 ```http
 Planned-Outage: start="2026-12-01T02:00:00Z", end="2026-12-01T06:00:00Z"
 ```
+
+## Open standards
+
+There is no single standard for scheduled maintenance in HTTP. The plugin
+follows the published standard for each part of the behaviour instead.
+
+| Concern | Standard | How the plugin applies it |
+|---|---|---|
+| Outage status | [RFC 9110, section 15.6.4](https://www.rfc-editor.org/rfc/rfc9110#section-15.6.4) | `503 Service Unavailable` is the status defined for temporary unavailability such as maintenance, so it is the default. `status_code` is limited to 400 to 599. |
+| When to retry | [RFC 9110, section 10.2.3](https://www.rfc-editor.org/rfc/rfc9110#section-10.2.3) | `Retry-After` carries the number of seconds until the current window ends. |
+| Error body | [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) | The outage response is a Problem Details document (`application/problem+json`) with `type`, `title`, `status`, `detail` and the extension members `outage_start` and `outage_end`. RFC 9457 replaces RFC 7807. |
+| Caching | [RFC 9111, section 5.2.2.5](https://www.rfc-editor.org/rfc/rfc9111#section-5.2.2.5) | `Cache-Control: no-store` stops caches and CDNs from storing the outage response and serving it after the window ends. |
+| Timestamps | [RFC 3339, section 5.6](https://www.rfc-editor.org/rfc/rfc3339#section-5.6) | Window times use the RFC 3339 profile of ISO 8601, in UTC (`Z`) only, so daylight saving and timezone offsets cannot shift a window. |
+| Announcement header format | [RFC 9651, section 3.2](https://www.rfc-editor.org/rfc/rfc9651#section-3.2) | The announcement value is a Structured Field dictionary, `start="...", end="..."`, which any Structured Fields parser can read. |
+| Announcement header name | [RFC 6648](https://www.rfc-editor.org/rfc/rfc6648) and [RFC 9110, section 5.1](https://www.rfc-editor.org/rfc/rfc9110#section-5.1) | The default name `Planned-Outage` has no `X-` prefix, as RFC 6648 recommends. Custom names must be valid RFC 9110 field names. |
+
+No standard defines a header for announcing planned maintenance, so
+`Planned-Outage` is specific to this plugin.
+
+Standards considered and not used:
+
+| Standard | Reason |
+|---|---|
+| [RFC 8594](https://www.rfc-editor.org/rfc/rfc8594) `Sunset` | Announces that a resource will be removed permanently, not that it will be unavailable for a while. |
+| [RFC 9745](https://www.rfc-editor.org/rfc/rfc9745) `Deprecation` | Marks a resource as deprecated, which an outage is not. |
+| [RFC 5545](https://www.rfc-editor.org/rfc/rfc5545) iCalendar | Suited to publishing maintenance calendars outside HTTP, for example on a status page. That is outside the scope of a gateway plugin. |
 
 ## Configuration
 
