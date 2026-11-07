@@ -17,7 +17,7 @@ description = {
     response header. Compatible with Kong Gateway 3.14+ and Kong Konnect.
   ]],
   homepage = "https://github.com/b-rajesh/kong-schedule-outage-plugin",
-  license = "GPL-3.0",
+  license = "Apache-2.0",
 }
 
 dependencies = {}

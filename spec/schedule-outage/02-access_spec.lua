@@ -1,3 +1,4 @@
+-- SPDX-License-Identifier: Apache-2.0
 local helpers = require "spec.helpers"
 local cjson = require "cjson"
 
@@ -39,19 +40,31 @@ local FIXTURES = {
                           response_body = '{"errors":[{"code":"Service/Unavailable",'
                                           .. '"detail":"{message}","until":"{end_time}","meta":{}}]}',
                           response_headers = { ["X-Correlation-Id"] = "{request_id}" } },
+  -- Header names are case-insensitive: these replace the defaults, whatever their case.
+  ["casing.test"]     = { windows = { window(-HOUR, 600) },
+                          response_headers = { ["cache-control"] = "max-age=60", ["RETRY-AFTER"] = "1",
+                                               ["content-type"] = "text/plain" } },
+  -- Media types are case-insensitive too: the quotes in the message must still be escaped.
+  ["jsoncase.test"]   = { windows = { window(-HOUR, 600) }, message = 'Core "banking" upgrade',
+                          response_content_type = "Application/JSON",
+                          response_body = '{"detail":"{message}"}' },
+  -- No test sends a request to this route, so the log lines about it can only come from loading the configuration.
+  ["unenforced.test"] = { windows = { window(-HOUR, -2 * HOUR) } },
 }
 
 for _, strategy in helpers.all_strategies() do
   if strategy ~= "cassandra" then
     describe(PLUGIN_NAME .. ": (access) [#" .. strategy .. "]", function()
       local client
+      local plugin_ids = {} -- host => id of its plugin instance
 
       lazy_setup(function()
         local bp = helpers.get_db_utils(strategy == "off" and "postgres" or strategy, nil, { PLUGIN_NAME })
 
         for host, config in pairs(FIXTURES) do
           local route = bp.routes:insert({ hosts = { host } })
-          bp.plugins:insert({ name = PLUGIN_NAME, route = { id = route.id }, config = config })
+          local plugin = bp.plugins:insert({ name = PLUGIN_NAME, route = { id = route.id }, config = config })
+          plugin_ids[host] = plugin.id
         end
 
         assert(helpers.start_kong({
@@ -77,6 +90,16 @@ for _, strategy in helpers.all_strategies() do
       local function get(host)
         return assert(client:send({ method = "GET", path = "/request", headers = { host = host } }))
       end
+
+      -- Keep this first: no request has been sent yet, so nothing but loading the configuration can have logged.
+      describe("when the configuration loads", function()
+        it("logs invalid windows before any request is sent", function()
+          assert.logfile().has.line("ignoring window #1: start_time must be before end_time", true, 10)
+          assert.logfile().has.line("all 1 configured windows are invalid: no outage will be enforced", true, 10)
+          -- Nothing else says which instance it is: there is no request to log it against.
+          assert.logfile().has.line("(plugin " .. plugin_ids["unenforced.test"] .. ")", true, 10)
+        end)
+      end)
 
       describe("before a window", function()
         it("proxies and announces a window within the lead time", function()
@@ -153,6 +176,24 @@ for _, strategy in helpers.all_strategies() do
             ["until"] = FIXTURES["template.test"].windows[1].end_time,
             meta = {},
           } } }, cjson.decode(raw))
+        end)
+
+        it("lets response_headers replace the defaults whatever their letter case", function()
+          for _ = 1, 20 do
+            local res = get("casing.test")
+            assert.res_status(503, res)
+            assert.equal("max-age=60", res.headers["Cache-Control"])
+            assert.equal("1", res.headers["Retry-After"])
+            -- nginx appends its charset to text types.
+            assert.matches("^text/plain", res.headers["Content-Type"])
+          end
+        end)
+
+        it("escapes template values for a JSON content type in any letter case", function()
+          local res = get("jsoncase.test")
+          local raw = assert.res_status(503, res)
+          assert.equal("Application/JSON", res.headers["Content-Type"])
+          assert.same({ detail = 'Core "banking" upgrade' }, cjson.decode(raw))
         end)
       end)
 
